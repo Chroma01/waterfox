@@ -12,5 +12,36 @@
 GeckoSharedLibrary("gkcodecs")
 SHARED_LIBRARY_NAME = "gkcodecs"
 SYMBOLS_FILE = "gkcodecs.symbols"
+if CONFIG["MOZ_BUNDLED_RAV1D"]:
+    DEFINES["MOZ_BUNDLED_RAV1D"] = True
+    if CONFIG["FUZZING_INTERFACES"]:
+        DEFINES["FUZZING_INTERFACES"] = True
+    if CONFIG["OS_TARGET"] not in ("Darwin", "WINNT"):
+        # Use -u because the ELF version script won't pull in unreferenced
+        # Rust archive members.
+        symbols = [
+            "apply_grain",
+            "close",
+            "data_create",
+            "data_props_unref",
+            "data_unref",
+            "data_wrap",
+            "data_wrap_user_data",
+            "default_settings",
+            "flush",
+            "get_decode_error_data_props",
+            "get_event_flags",
+            "get_frame_delay",
+            "get_picture",
+            "open",
+            "parse_sequence_header",
+            "picture_unref",
+            "send_data",
+            "version",
+            "version_api",
+        ]
+        if CONFIG["FUZZING_INTERFACES"]:
+            symbols += ["set_cpu_flags_mask"]
+        LDFLAGS += ["-Wl,-u,moz_dav1d_%s" % symbol for symbol in symbols]
 if CONFIG["MOZ_SYSTEM_LIBVPX"]:
     DEFINES["MOZ_SYSTEM_LIBVPX"] = True

@@ -1576,6 +1576,15 @@ criteria = "safe-to-deploy"
 version = "0.3.25"
 notes = "This crate shells out to the pkg-config executable, but it appears to sanitize inputs reasonably."
 
+[[audits.bytecode-alliance.audits.raw-cpuid]]
+who = "Alex Crichton <alex@alexcrichton.com>"
+criteria = "safe-to-deploy"
+version = "11.5.0"
+notes = """
+Very little `unsafe` usage, what is there is well-documented. Otherwise it's a
+big library but that's more Intel's fault than anyone else's.
+"""
+
 [[audits.bytecode-alliance.audits.rustc-demangle]]
 who = "Alex Crichton <alex@alexcrichton.com>"
 criteria = "safe-to-deploy"

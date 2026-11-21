@@ -32,6 +32,31 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef MOZ_BUNDLED_RAV1D
+#define dav1d_apply_grain moz_dav1d_apply_grain
+#define dav1d_close moz_dav1d_close
+#define dav1d_data_create moz_dav1d_data_create
+#define dav1d_data_props_unref moz_dav1d_data_props_unref
+#define dav1d_data_unref moz_dav1d_data_unref
+#define dav1d_data_wrap moz_dav1d_data_wrap
+#define dav1d_data_wrap_user_data moz_dav1d_data_wrap_user_data
+#define dav1d_default_settings moz_dav1d_default_settings
+#define dav1d_flush moz_dav1d_flush
+#define dav1d_get_decode_error_data_props moz_dav1d_get_decode_error_data_props
+#define dav1d_get_event_flags moz_dav1d_get_event_flags
+#define dav1d_get_frame_delay moz_dav1d_get_frame_delay
+#define dav1d_get_picture moz_dav1d_get_picture
+#define dav1d_open moz_dav1d_open
+#define dav1d_parse_sequence_header moz_dav1d_parse_sequence_header
+#define dav1d_picture_unref moz_dav1d_picture_unref
+#define dav1d_send_data moz_dav1d_send_data
+#define dav1d_version moz_dav1d_version
+#define dav1d_version_api moz_dav1d_version_api
+#ifdef FUZZING_INTERFACES
+#define dav1d_set_cpu_flags_mask moz_dav1d_set_cpu_flags_mask
+#endif
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

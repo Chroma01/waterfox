@@ -1,3 +1,27 @@
+#ifdef MOZ_BUNDLED_RAV1D
+moz_dav1d_apply_grain
+moz_dav1d_close
+moz_dav1d_data_create
+moz_dav1d_data_props_unref
+moz_dav1d_data_unref
+moz_dav1d_data_wrap
+moz_dav1d_data_wrap_user_data
+moz_dav1d_default_settings
+moz_dav1d_flush
+moz_dav1d_get_decode_error_data_props
+moz_dav1d_get_event_flags
+moz_dav1d_get_frame_delay
+moz_dav1d_get_picture
+moz_dav1d_open
+moz_dav1d_parse_sequence_header
+moz_dav1d_picture_unref
+moz_dav1d_send_data
+moz_dav1d_version
+moz_dav1d_version_api
+#ifdef FUZZING_INTERFACES
+moz_dav1d_set_cpu_flags_mask
+#endif
+#endif
 # libaom symbols
 aom_codec_av1_cx
 aom_codec_av1_dx

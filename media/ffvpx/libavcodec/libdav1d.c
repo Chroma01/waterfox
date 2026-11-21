@@ -89,7 +89,12 @@ static int libdav1d_picture_allocator(Dav1dPicture *p, void *cookie)
     if (ret != dav1d->pool_size) {
         av_buffer_pool_uninit(&dav1d->pool);
         // Use twice the amount of required padding bytes for aligned_ptr below.
+#ifdef MOZ_BUNDLED_RAV1D
+        // rav1d requires initialized picture buffers.
+        dav1d->pool = av_buffer_pool_init(ret + DAV1D_PICTURE_ALIGNMENT * 2, av_buffer_allocz);
+#else
         dav1d->pool = av_buffer_pool_init(ret + DAV1D_PICTURE_ALIGNMENT * 2, NULL);
+#endif
         if (!dav1d->pool) {
             dav1d->pool_size = 0;
             return AVERROR(ENOMEM);

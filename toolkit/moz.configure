@@ -856,19 +856,19 @@ pkg_check_modules("MOZ_SYSTEM_LIBDAV1D", "dav1d >= 1.2.1", when="--with-system-a
 
 
 @depends(target, "--with-system-av1", when=compile_environment)
-def dav1d_asm(target, system_av1):
-    if not system_av1 and target.cpu in ("arm", "aarch64", "x86", "x86_64"):
-        return True
-
-
-@depends(target, "--with-system-av1", when=compile_environment)
-def dav1d_nasm(target, system_av1):
+def rav1d_nasm(target, system_av1):
     if not system_av1 and target.cpu in ("x86", "x86_64"):
         return namespace(version="2.14", what="AV1")
 
 
-set_config("MOZ_DAV1D_ASM", dav1d_asm)
-set_define("MOZ_DAV1D_ASM", dav1d_asm)
+@depends("--with-system-av1")
+def bundled_rav1d(system_av1):
+    if not system_av1:
+        return True
+
+
+set_config("MOZ_BUNDLED_RAV1D", bundled_rav1d)
+set_define("MOZ_BUNDLED_RAV1D", bundled_rav1d)
 set_config("MOZ_SYSTEM_AV1", True, when="--with-system-av1")
 
 # JXL Image Codec Support
@@ -2628,7 +2628,7 @@ set_config("FFVPX_USE_NASM", True, when=ffvpx.use_nasm)
 
 # nasm detection
 # ==============================================================
-@depends(dav1d_nasm, vpx_nasm, jpeg_nasm, ffvpx_nasm, when=compile_environment)
+@depends(rav1d_nasm, vpx_nasm, jpeg_nasm, ffvpx_nasm, when=compile_environment)
 def need_nasm(*requirements):
     requires = {
         x.what: x.version if hasattr(x, "version") else True for x in requirements if x

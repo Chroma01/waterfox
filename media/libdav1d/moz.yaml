@@ -39,7 +39,7 @@ updatebot:
     maintainer-bz: cchang@mozilla.com
     tasks:
       - type: vendoring
-        enabled: true
+        enabled: false
         frequency: release
 
 vendoring:
@@ -60,6 +60,7 @@ vendoring:
 
   patches:
     - reset_n_ts_on_frame_init_failure.patch
+    - prefix-bundled-symbols.patch
 
   update-actions:
     - action: copy-file
