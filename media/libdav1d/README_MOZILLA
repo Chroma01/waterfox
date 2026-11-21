@@ -18,5 +18,9 @@ Rust wrapper (rust/lib.rs) provides typed moz_dav1d_* forwarders. Gecko
 uses the prefixed symbols to avoid collisions with dav1d loaded by system
 FFmpeg. --with-system-av1 uses the system libraries.
 
-Update rav1d with ./mach vendor media/libdav1d/rust/moz.yaml -r <revision>.
-Refresh the Rust dependencies with ./mach vendor rust.
+Update rav1d with:
+
+  ./mach vendor media/libdav1d/rust/moz.yaml -r <revision> --patch-mode check
+
+Refresh the Rust dependencies with ./mach vendor rust, then run
+./mach gtest 'Dav1dAbi.*' to check the C ABI and film-grain decoding.

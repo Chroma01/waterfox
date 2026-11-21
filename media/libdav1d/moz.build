@@ -13,5 +13,6 @@ EXPORTS.dav1d += [
 ]
 
 DIRS += ["rust"]
+TEST_DIRS += ["test/gtest"]
 if CONFIG["OS_TARGET"] == "Linux" and CONFIG["FUZZING_INTERFACES"]:
     TEST_DIRS += ["test/fuzztest"]
