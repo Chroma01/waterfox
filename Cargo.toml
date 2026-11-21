@@ -81,6 +81,7 @@ members = [
 exclude = [
   # Exclude third-party code vendored into mozilla-central.
   "servo",
+  "third_party/rav1d",
   "third_party/rust",
 
   # Excluded because these crates have their own Cargo workspaces so they can't

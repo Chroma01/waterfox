@@ -1,0 +1,232 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -9,7 +9,7 @@
+ license = "BSD-2-Clause"
+ repository = "https://github.com/memorysafety/rav1d"
+ # The arm `.S` files `#include` `src/arm/asm-offsets.h`, so keep it despite `*.h`.
+-exclude = ["*.c", "*.h", "!src/arm/asm-offsets.h", "*.in", "meson*", "tests/", "doc/", "package/"]
++exclude = ["*.c", "!src/log_callback.c", "*.h", "!src/arm/asm-offsets.h", "*.in", "meson*", "tests/", "doc/", "package/"]
+
+ [lib]
+ crate-type = ["rlib"]
+--- a/build.rs
++++ b/build.rs
+@@ -330,6 +330,11 @@
+ }
+
+ fn main() {
++    println!("cargo:rerun-if-changed=src/log_callback.c");
++    cc::Build::new()
++        .file("src/log_callback.c")
++        .compile("rav1d_log_callback");
++
+     #[cfg(feature = "asm")]
+     {
+         asm::main();
+--- a/src/log.rs
++++ b/src/log.rs
+@@ -1,4 +1,4 @@
+-use std::ffi::{c_char, c_uint, c_void};
++use std::ffi::{c_int, c_void};
+ use std::fmt;
+ use std::fmt::Write as _;
+ use std::io::{stderr, stdout, Write as _};
+@@ -6,14 +6,15 @@
+
+ use crate::send_sync_non_null::SendSyncNonNull;
+
+-pub type Dav1dLoggerCallback = unsafe extern "C" fn(
+-    // [`Dav1dLogger::cookie`].
+-    cookie: Option<SendSyncNonNull<c_void>>,
+-    // A `printf`-style format specifier.
+-    fmt: *const c_char,
+-    // `printf`-style variadic args.
+-    args: ...
+-);
++/// An opaque pointer to a C `void (*)(void *, const char *, va_list)`.
++/// Only the C shim may call it; Rust does not model the target's `va_list`.
++pub type Dav1dLoggerCallback = unsafe extern "C" fn();
++
++unsafe extern "C" {
++    fn rav1d_log_byte(logger: &Dav1dLogger, byte: c_int);
++    static rav1d_stdout_logger: Dav1dLogger;
++    static rav1d_stderr_logger: Dav1dLogger;
++}
+
+ #[derive(Clone)]
+ #[repr(C)]
+@@ -29,16 +30,15 @@
+     /// whose constructors ensure this [`Send`]` + `[`Sync`] safety.
+     cookie: Option<SendSyncNonNull<c_void>>,
+
+-    /// A `printf`-style function except for an extra first argument that will always be the above `cookie`.
++    /// A `vprintf`-style callback with `cookie` as its first argument.
+     callback: Option<Dav1dLoggerCallback>,
+ }
+
+ impl Dav1dLogger {
+     /// # Safety
+     ///
+-    /// `callback`, if non-[`None`]/`NULL` must be safe to call when:
+-    /// * the first argument is `cookie`
+-    /// * the rest of the arguments would be safe to call `printf` with
++    /// `callback`, if non-[`None`]/`NULL`, must be a C `va_list` callback
++    /// valid to call with `cookie`, a format string, and its arguments.
+     ///
+     /// See [`Self::cookie`]'s safety requirements.
+     pub const unsafe fn new(
+@@ -51,23 +51,14 @@
+
+ impl fmt::Write for Dav1dLogger {
+     fn write_str(&mut self, s: &str) -> fmt::Result {
+-        let callback = self.callback.unwrap();
++        if self.callback.is_none() {
++            return Ok(());
++        }
+
+-        // `s` doesn't have a terminating nul-byte,
+-        // and it may have internal nul-bytes,
+-        // so it's easiest just to print one byte at a time.
+-        // This may be slow, but logging can be disabled if it's slow,
+-        // or the Rust API can be used instead.
+-        let fmt = c"%c";
++        // Print bytes individually because `s` may contain embedded NULs.
+         for &byte in s.as_bytes() {
+-            // SAFETY:
+-            //
+-            // The first argument is `self.cookie`
+-            // and the rest are safe to call `printf` with,
+-            // as required by [`Self::new`].
+-            unsafe {
+-                callback(self.cookie, fmt.as_ptr(), byte as c_uint);
+-            }
++            // SAFETY: The callback is non-null and valid per `Self::new`.
++            unsafe { rav1d_log_byte(self, c_int::from(byte)) };
+         }
+         Ok(())
+     }
+@@ -126,63 +117,37 @@
+     }
+ }
+
+-mod marker {
+-    use super::*;
+-
+-    type Callback = extern "C" fn(cookie: *mut c_void, fmt: *const c_char);
+-
+-    const fn cast(callback: Callback) -> Dav1dLoggerCallback {
+-        // SAFETY: It should always be safe to ignore variadic args.
+-        // Declaring a variadic `fn` is unstable, though, which is why we avoid that.
+-        unsafe { std::mem::transmute(callback) }
+-    }
+-
+-    pub const STDOUT: Dav1dLoggerCallback = {
+-        /// Create an empty [`Dav1dLoggerCallback`] for use as a marker `fn`
+-        /// for special `fn`s stored in [`Dav1dLogger::callback`].
+-        extern "C" fn stdout(_cookie: *mut c_void, _fmt: *const c_char) {
+-            // The `fn` needs a unique body so that
+-            // multiple ones don't get optimized into the same `fn`.
+-            unimplemented!(stringify!(stdout));
+-        }
+-        cast(stdout)
+-    };
+-
+-    pub const STDERR: Dav1dLoggerCallback = {
+-        /// Create an empty [`Dav1dLoggerCallback`] for use as a marker `fn`
+-        /// for special `fn`s stored in [`Dav1dLogger::callback`].
+-        extern "C" fn stderr(_cookie: *mut c_void, _fmt: *const c_char) {
+-            // The `fn` needs a unique body so that
+-            // multiple ones don't get optimized into the same `fn`.
+-            unimplemented!(stringify!(stderr));
+-        }
+-        cast(stderr)
+-    };
+-}
+-
+ impl From<Dav1dLogger> for Option<Rav1dLogger> {
+     fn from(logger: Dav1dLogger) -> Self {
+-        let Dav1dLogger { cookie, callback } = logger;
+-        Some(match callback {
+-            None => return None,
+-            Some(cb) if fn_addr_eq(cb, marker::STDOUT) => Rav1dLogger::Stdout,
+-            Some(cb) if fn_addr_eq(cb, marker::STDERR) => Rav1dLogger::Stderr,
+-            _ => Rav1dLogger::Dav1d(Dav1dLogger { cookie, callback }),
++        let callback = logger.callback?;
++        // SAFETY: The C shim defines both immutable loggers with non-null callbacks.
++        let (stdout_cb, stderr_cb) = unsafe {
++            (
++                rav1d_stdout_logger.callback.unwrap(),
++                rav1d_stderr_logger.callback.unwrap(),
++            )
++        };
++        Some(if fn_addr_eq(callback, stdout_cb) {
++            Rav1dLogger::Stdout
++        } else if fn_addr_eq(callback, stderr_cb) {
++            Rav1dLogger::Stderr
++        } else {
++            Rav1dLogger::Dav1d(logger)
+         })
+     }
+ }
+
+ impl From<Option<Rav1dLogger>> for Dav1dLogger {
+     fn from(logger: Option<Rav1dLogger>) -> Self {
+-        let cookie = match &logger {
+-            Some(Rav1dLogger::Dav1d(dav1d)) => dav1d.cookie,
+-            _ => None,
+-        };
+-        let callback = logger.and_then(|logger| match logger {
+-            Rav1dLogger::Dav1d(dav1d) => dav1d.callback,
+-            Rav1dLogger::Stdout => Some(marker::STDOUT),
+-            Rav1dLogger::Stderr => Some(marker::STDERR),
+-        });
+-        Self { cookie, callback }
++        // SAFETY: The C shim defines both immutable loggers.
++        match logger {
++            Some(Rav1dLogger::Stdout) => unsafe { rav1d_stdout_logger.clone() },
++            Some(Rav1dLogger::Stderr) => unsafe { rav1d_stderr_logger.clone() },
++            Some(Rav1dLogger::Dav1d(dav1d)) => dav1d,
++            None => Self {
++                cookie: None,
++                callback: None,
++            },
++        }
+     }
+ }
+--- /dev/null
++++ b/src/log_callback.c
+@@ -0,0 +1,34 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++
++#include <stdarg.h>
++#include <stdio.h>
++
++/* Keep this definition in sync with dav1d.h. C owns the va_list ABI. */
++typedef struct Dav1dLogger {
++    void *cookie;
++    void (*callback)(void *cookie, const char *format, va_list ap);
++} Dav1dLogger;
++
++static void call_logger(const Dav1dLogger *logger, const char *format, ...) {
++    va_list ap;
++    va_start(ap, format);
++    logger->callback(logger->cookie, format, ap);
++    va_end(ap);
++}
++
++void rav1d_log_byte(const Dav1dLogger *logger, int byte) {
++    call_logger(logger, "%c", byte);
++}
++
++static void log_stdout(void *cookie, const char *format, va_list ap) {
++    (void)cookie;
++    vfprintf(stdout, format, ap);
++}
++
++static void log_stderr(void *cookie, const char *format, va_list ap) {
++    (void)cookie;
++    vfprintf(stderr, format, ap);
++}
++
++const Dav1dLogger rav1d_stdout_logger = {NULL, log_stdout};
++const Dav1dLogger rav1d_stderr_logger = {NULL, log_stderr};

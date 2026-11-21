@@ -1,0 +1,51 @@
+schema: 1
+
+bugzilla:
+  product: Core
+  component: "Audio/Video: Playback"
+
+origin:
+  name: rav1d
+  description: Rust AV1 decoder with the dav1d C API
+  url: https://github.com/memorysafety/rav1d
+  release: 2e7216c20ac2a75de204d6c8d7268b75a45959b4 (2026-10-27T18:44:56Z).
+  revision: 2e7216c20ac2a75de204d6c8d7268b75a45959b4
+  license: BSD-2-Clause
+  license-file: COPYING
+
+vendoring:
+  url: https://github.com/memorysafety/rav1d
+  source-hosting: github
+  vendor-directory: third_party/rav1d
+  skip-vendoring-steps: [update-moz-build]
+  exclude:
+    - "**/*.c"
+    - "**/*.h"
+    - "**/*.in"
+    - "**/meson.build"
+    - .gitlab-ci.yml
+    - .github
+    - .gitignore
+    - CONTRIBUTING.md
+    - Cargo.lock
+    - NEWS.dav1d
+    - THANKS.md
+    - benchmark.py
+    - doc
+    - examples
+    - gcovr.cfg
+    - meson_options.txt
+    - package
+    - retranspile.sh
+    - rust-toolchain.toml
+    - rustfmt.toml
+    - tests
+    - tools
+  include:
+    - src/arm/asm-offsets.h
+  patches:
+    - rav1d-cargo-packaging.patch
+    - rav1d-zerocopy-0.8.patch
+    - rav1d-stable-build-cpu.patch
+    - rav1d-gecko.patch
+    - rav1d-logger.patch

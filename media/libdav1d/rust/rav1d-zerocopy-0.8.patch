@@ -1,0 +1,704 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -27,7 +27,7 @@
+ static_assertions = "1.1.0"
+ strum = { version = "0.27", features = ["derive"] }
+ to_method = "1.1.0"
+-zerocopy = { version = "0.7.32", features = ["derive"] }
++zerocopy = { version = "0.8.27", features = ["derive"] }
+
+ [build-dependencies]
+ cc = "1.0.79"
+--- a/src/disjoint_mut.rs
++++ b/src/disjoint_mut.rs
+@@ -14,7 +14,7 @@
+ use std::sync::Arc;
+ use std::{fmt, mem, ptr};
+
+-use zerocopy::{AsBytes, FromBytes};
++use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+
+ use crate::align::{AlignedByteChunk, AlignedVec};
+
+@@ -108,13 +108,13 @@
+
+ impl<'a, T: AsMutPtr> DisjointMutGuard<'a, T, [u8]> {
+     #[inline] // Inline to see alignment to potentially elide checks.
+-    fn cast_slice<V: AsBytes + FromBytes>(self) -> DisjointMutGuard<'a, T, [V]> {
++    fn cast_slice<V: FromBytes + IntoBytes>(self) -> DisjointMutGuard<'a, T, [V]> {
+         // We don't want to drop the old guard, because we aren't changing or
+         // removing the bounds from parent here.
+         let mut old_guard = ManuallyDrop::new(self);
+         let bytes = mem::take(&mut old_guard.slice);
+         DisjointMutGuard {
+-            slice: V::mut_slice_from(bytes).unwrap(),
++            slice: <[V]>::mut_from_bytes(bytes).unwrap(),
+             phantom: old_guard.phantom,
+             #[cfg(debug_assertions)]
+             parent: old_guard.parent,
+@@ -124,13 +124,13 @@
+     }
+
+     #[inline] // Inline to see alignment to potentially elide checks.
+-    fn cast<V: AsBytes + FromBytes>(self) -> DisjointMutGuard<'a, T, V> {
++    fn cast<V: FromBytes + IntoBytes + KnownLayout>(self) -> DisjointMutGuard<'a, T, V> {
+         // We don't want to drop the old guard, because we aren't changing or
+         // removing the bounds from parent here.
+         let mut old_guard = ManuallyDrop::new(self);
+         let bytes = mem::take(&mut old_guard.slice);
+         DisjointMutGuard {
+-            slice: V::mut_from(bytes).unwrap(),
++            slice: V::mut_from_bytes(bytes).unwrap(),
+             phantom: old_guard.phantom,
+             #[cfg(debug_assertions)]
+             parent: old_guard.parent,
+@@ -168,13 +168,13 @@
+
+ impl<'a, T: AsMutPtr> DisjointImmutGuard<'a, T, [u8]> {
+     #[inline] // Inline to see alignment to potentially elide checks.
+-    fn cast_slice<V: FromBytes>(self) -> DisjointImmutGuard<'a, T, [V]> {
++    fn cast_slice<V: FromBytes + Immutable>(self) -> DisjointImmutGuard<'a, T, [V]> {
+         // We don't want to drop the old guard, because we aren't changing or
+         // removing the bounds from parent here.
+         let mut old_guard = ManuallyDrop::new(self);
+         let bytes = mem::take(&mut old_guard.slice);
+         DisjointImmutGuard {
+-            slice: V::slice_from(bytes).unwrap(),
++            slice: <[V]>::ref_from_bytes(bytes).unwrap(),
+             phantom: old_guard.phantom,
+             #[cfg(debug_assertions)]
+             parent: old_guard.parent,
+@@ -184,13 +184,13 @@
+     }
+
+     #[inline] // Inline to see alignment to potentially elide checks.
+-    fn cast<V: FromBytes>(self) -> DisjointImmutGuard<'a, T, V> {
++    fn cast<V: FromBytes + Immutable + KnownLayout>(self) -> DisjointImmutGuard<'a, T, V> {
+         // We don't want to drop the old guard, because we aren't changing or
+         // removing the bounds from parent here.
+         let mut old_guard = ManuallyDrop::new(self);
+         let bytes = mem::take(&mut old_guard.slice);
+         DisjointImmutGuard {
+-            slice: V::ref_from(bytes).unwrap(),
++            slice: V::ref_from_bytes(bytes).unwrap(),
+             phantom: old_guard.phantom,
+             #[cfg(debug_assertions)]
+             parent: old_guard.parent,
+@@ -409,7 +409,7 @@
+     pub fn mut_slice_as<'a, I, V>(&'a self, index: I) -> DisjointMutGuard<'a, T, [V]>
+     where
+         I: SliceBounds,
+-        V: AsBytes + FromBytes,
++        V: FromBytes + IntoBytes,
+     {
+         let slice = self.index_mut(index.mul(mem::size_of::<V>())).cast_slice();
+         self.check_cast_slice_len(index, &slice);
+@@ -437,7 +437,7 @@
+     #[cfg_attr(debug_assertions, track_caller)]
+     pub fn mut_element_as<'a, V>(&'a self, index: usize) -> DisjointMutGuard<'a, T, V>
+     where
+-        V: AsBytes + FromBytes,
++        V: FromBytes + IntoBytes + KnownLayout,
+     {
+         self.index_mut((index..index + 1).mul(mem::size_of::<V>()))
+             .cast()
+@@ -471,7 +471,7 @@
+     pub fn slice_as<'a, I, V>(&'a self, index: I) -> DisjointImmutGuard<'a, T, [V]>
+     where
+         I: SliceBounds,
+-        V: FromBytes,
++        V: FromBytes + Immutable,
+     {
+         let slice = self.index(index.mul(mem::size_of::<V>())).cast_slice();
+         self.check_cast_slice_len(index, &slice);
+@@ -505,7 +505,7 @@
+     #[cfg_attr(debug_assertions, track_caller)]
+     pub fn element_as<'a, V>(&'a self, index: usize) -> DisjointImmutGuard<'a, T, V>
+     where
+-        V: FromBytes,
++        V: FromBytes + Immutable + KnownLayout,
+     {
+         self.index((index..index + 1).mul(mem::size_of::<V>()))
+             .cast()
+--- a/src/include/common/bitdepth.rs
++++ b/src/include/common/bitdepth.rs
+@@ -3,7 +3,7 @@
+ use std::fmt::{Display, Formatter};
+ use std::ops::{Add, Div, Mul, Rem, Shr};
+
+-use zerocopy::{AsBytes, FromBytes};
++use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+
+ use crate::align::{Align16, Align8, ArrayDefault};
+ use crate::include::common::intops::clip;
+@@ -144,7 +144,9 @@
+         + ToPrimitive<c_int>
+         + ToPrimitive<c_uint>
+         + FromBytes
+-        + AsBytes;
++        + Immutable
++        + IntoBytes
++        + KnownLayout;
+
+     type AlignPixelX8: Copy;
+
+@@ -159,7 +161,9 @@
+         + ToPrimitive<c_uint>
+         + Add<Output = Self::Coef>
+         + FromBytes
+-        + AsBytes
++        + Immutable
++        + IntoBytes
++        + KnownLayout
+         + Display;
+
+     type Entry: Copy
+--- a/src/include/dav1d/picture.rs
++++ b/src/include/dav1d/picture.rs
+@@ -8,7 +8,7 @@
+
+ use libc::{ptrdiff_t, uintptr_t};
+ use to_method::To as _;
+-use zerocopy::{AsBytes, FromBytes, FromZeroes};
++use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+
+ use crate::c_arc::RawArc;
+ use crate::disjoint_mut::{
+@@ -102,7 +102,7 @@
+     pub allocator_data: Option<SendSyncNonNull<c_void>>,
+ }
+
+-#[derive(Clone, FromZeroes, FromBytes, AsBytes)]
++#[derive(Clone, FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C, align(64))]
+ pub struct AlignedPixelChunk([u8; RAV1D_PICTURE_ALIGNMENT]);
+
+@@ -177,7 +177,7 @@
+     /// As opposed to [`Self::new`], this is safe because `buf` is a `&mut` and thus unique,
+     /// so it is sound to further subdivide it into disjoint `&mut`s.
+     pub fn wrap_buf<BD: BitDepth>(buf: &mut [BD::Pixel], stride: usize) -> Self {
+-        let buf = AsBytes::as_bytes_mut(buf);
++        let buf = buf.as_mut_bytes();
+         let ptr = NonNull::new(buf.as_mut_ptr()).unwrap();
+         assert!(ptr.cast::<AlignedPixelChunk>().is_aligned());
+         let len = buf.len();
+--- a/src/internal.rs
++++ b/src/internal.rs
+@@ -9,7 +9,7 @@
+ use libc::ptrdiff_t;
+ use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard};
+ use strum::FromRepr;
+-use zerocopy::{AsBytes, FromBytes, FromZeroes};
++use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
+
+ use crate::align::{Align16, Align64, AlignedVec2, AlignedVec64};
+ use crate::cdef::Rav1dCdefDSPContext;
+@@ -879,37 +879,37 @@
+ pub const CF_LEN: usize = 32 * 32;
+
+ /// Array of 32 * 32 coef elements (either `i16` or `i32`).
+-#[derive(FromZeroes)]
++#[derive(FromZeros)]
+ #[repr(align(64))]
+ pub struct Cf([i32; CF_LEN]);
+
+ impl Cf {
+     #[allow(unused)]
+     pub fn select<BD: BitDepth>(&self) -> &[BD::Coef; CF_LEN] {
+-        FromBytes::ref_from_prefix(AsBytes::as_bytes(&self.0)).unwrap()
++        FromBytes::ref_from_prefix(self.0.as_bytes()).unwrap().0
+     }
+
+     pub fn select_mut<BD: BitDepth>(&mut self) -> &mut [BD::Coef; CF_LEN] {
+-        FromBytes::mut_from_prefix(AsBytes::as_bytes_mut(&mut self.0)).unwrap()
++        FromBytes::mut_from_prefix(self.0.as_mut_bytes()).unwrap().0
+     }
+ }
+
+ /// 4D array of pixel elements (either `u8` or `u16`).
+ ///
+ /// Indices are `[2 a/l][32 bx/y4][3 plane][8 palette_idx]`.
+-#[derive(FromZeroes)]
++#[derive(FromZeros)]
+ pub struct AlPal([u16; 8 * 3 * 32 * 2]);
+
+ impl AlPal {
+     pub fn select_mut<BD: BitDepth>(&mut self) -> &mut [[[[BD::Pixel; 8]; 3]; 32]; 2] {
+-        FromBytes::mut_from_prefix(AsBytes::as_bytes_mut(&mut self.0)).unwrap()
++        FromBytes::mut_from_prefix(self.0.as_mut_bytes()).unwrap().0
+     }
+ }
+
+ pub const COMPINTER_LEN: usize = 128 * 128;
+ pub const SEG_MASK_LEN: usize = 128 * 128;
+
+-#[derive(FromZeroes, FromBytes, AsBytes)]
++#[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C, align(64))]
+ pub struct ScratchCompinter {
+     pub compinter: [[i16; COMPINTER_LEN]; 2],
+@@ -920,47 +920,47 @@
+ const SCRATCH_COMPINTER_SIZE: usize = mem::size_of::<ScratchCompinter>();
+ pub const SCRATCH_LAP_LEN: usize = 128 * 32;
+
+-#[derive(FromZeroes, FromBytes, AsBytes)]
++#[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C, align(64))]
+ pub struct ScratchLapInter([u8; SCRATCH_COMPINTER_SIZE]);
+
+ impl ScratchLapInter {
+     pub fn lap_mut<BD: BitDepth>(&mut self) -> &mut [BD::Pixel; SCRATCH_LAP_LEN] {
+-        FromBytes::mut_from_prefix(&mut self.0).unwrap()
++        FromBytes::mut_from_prefix(&mut self.0).unwrap().0
+     }
+
+     pub fn inter_mut(&mut self) -> &mut ScratchCompinter {
+-        FromBytes::mut_from_prefix(&mut self.0).unwrap()
++        FromBytes::mut_from_prefix(&mut self.0).unwrap().0
+     }
+ }
+
+ pub const EMU_EDGE_LEN: usize = 320 * (256 + 7);
+ // stride=192 for non-SVC, or 320 for SVC
+-#[derive(FromZeroes, FromBytes, AsBytes)]
++#[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C, align(64))]
+ pub struct ScratchEmuEdge([u8; EMU_EDGE_LEN * 2]);
+
+ impl ScratchEmuEdge {
+     pub fn buf_mut<BD: BitDepth>(&mut self) -> &mut [BD::Pixel; EMU_EDGE_LEN] {
+-        FromBytes::mut_from_prefix(&mut self.0).unwrap()
+-    }
+-}
+-
+-#[derive(FromZeroes, FromBytes, AsBytes)]
++        FromBytes::mut_from_prefix(&mut self.0).unwrap().0
++    }
++}
++
++#[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C)]
+ pub struct ScratchInter {
+     pub lap_inter: ScratchLapInter,
+     pub emu_edge: ScratchEmuEdge,
+ }
+
+-#[derive(FromZeroes, FromBytes, AsBytes)]
++#[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C, align(64))]
+ pub struct ScratchPal {
+     pub pal_order: [[u8; 8]; 64],
+     pub pal_ctx: [u8; 64],
+ }
+
+-#[derive(FromZeroes, FromBytes, AsBytes)]
++#[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C, align(64))]
+ pub struct ScratchLevelsPal([u8; 32 * 34]);
+
+@@ -970,80 +970,80 @@
+     }
+
+     pub fn pal_mut(&mut self) -> &mut ScratchPal {
+-        FromBytes::mut_from_prefix(&mut self.0).unwrap()
++        FromBytes::mut_from_prefix(&mut self.0).unwrap().0
+     }
+ }
+
+ pub const SCRATCH_INTER_INTRA_BUF_LEN: usize = 64 * 64;
+
+-#[derive(Clone, Copy, FromZeroes, FromBytes, AsBytes)]
++#[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C, align(64))]
+ pub struct ScratchInterIntraBuf([u16; SCRATCH_INTER_INTRA_BUF_LEN * 2]);
+
+ impl ScratchInterIntraBuf {
+     pub fn buf_mut<BD: BitDepth>(&mut self) -> &mut [BD::Pixel; SCRATCH_INTER_INTRA_BUF_LEN] {
+-        FromBytes::mut_from_prefix(AsBytes::as_bytes_mut(&mut self.0)).unwrap()
++        FromBytes::mut_from_prefix(self.0.as_mut_bytes()).unwrap().0
+     }
+ }
+
+ pub const SCRATCH_EDGE_LEN: usize = 257;
+
+-#[derive(Clone, Copy, FromZeroes, FromBytes, AsBytes)]
++#[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C, align(64))]
+ pub struct ScratchEdgeBuf([u8; SCRATCH_EDGE_LEN * 2 + 62]); // 257 Pixel elements + 62 padding bytes
+
+ impl ScratchEdgeBuf {
+     pub fn buf_mut<BD: BitDepth>(&mut self) -> &mut [BD::Pixel; SCRATCH_EDGE_LEN] {
+-        FromBytes::mut_from_prefix(&mut self.0).unwrap()
+-    }
+-}
+-
+-#[derive(Clone, Copy, FromZeroes, FromBytes, AsBytes)]
++        FromBytes::mut_from_prefix(&mut self.0).unwrap().0
++    }
++}
++
++#[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C, align(16))] // Over-aligned for 8bpc (needs to be `align(8)` for 8bpc, `align(16)` for 16bpc).
+ pub struct ScratchPalBuf([u8; 8 * 3 * 2]); /* [3 plane][8 palette_idx] */
+
+ impl ScratchPalBuf {
+     pub fn buf<BD: BitDepth>(&self) -> &[[BD::Pixel; 8]; 3] {
+-        FromBytes::ref_from_prefix(&self.0).unwrap()
++        FromBytes::ref_from_prefix(&self.0).unwrap().0
+     }
+
+     pub fn buf_mut<BD: BitDepth>(&mut self) -> &mut [[BD::Pixel; 8]; 3] {
+-        FromBytes::mut_from_prefix(&mut self.0).unwrap()
+-    }
+-}
+-
+-#[derive(Clone, Copy, FromZeroes, FromBytes, AsBytes)]
++        FromBytes::mut_from_prefix(&mut self.0).unwrap().0
++    }
++}
++
++#[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C)]
+ pub struct ScratchInterIntraEdgePal {
+     pub interintra: ScratchInterIntraBuf,
+     pub edge: ScratchEdgeBuf,
+     pub pal: ScratchPalBuf,
+
+-    /// For `AsBytes`, so there's no implicit padding.
++    /// For [`IntoBytes`], so there's no implicit padding.
+     _padding: [u8; 16],
+ }
+
+ pub const SCRATCH_AC_TXTP_LEN: usize = 32 * 32;
+
+-#[derive(Clone, Copy, FromZeroes, FromBytes, AsBytes)]
++#[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C, align(64))]
+ pub struct ScratchAcTxtpMap([u8; SCRATCH_AC_TXTP_LEN * 2]);
+
+ impl ScratchAcTxtpMap {
+     pub fn ac_mut(&mut self) -> &mut [i16; SCRATCH_AC_TXTP_LEN] {
+-        FromBytes::mut_from_prefix(&mut self.0).unwrap()
++        FromBytes::mut_from_prefix(&mut self.0).unwrap().0
+     }
+
+     pub fn txtp_map(&self) -> &[TxfmType; SCRATCH_AC_TXTP_LEN] {
+-        FromBytes::ref_from_prefix(&self.0).unwrap()
++        FromBytes::ref_from_prefix(&self.0).unwrap().0
+     }
+
+     pub fn txtp_map_mut(&mut self) -> &mut [TxfmType; SCRATCH_AC_TXTP_LEN] {
+-        FromBytes::mut_from_prefix(&mut self.0).unwrap()
+-    }
+-}
+-
+-#[derive(FromZeroes, FromBytes, AsBytes)]
++        FromBytes::mut_from_prefix(&mut self.0).unwrap().0
++    }
++}
++
++#[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C)]
+ pub struct ScratchInterIntra {
+     pub levels_pal: ScratchLevelsPal,
+@@ -1055,21 +1055,21 @@
+
+ // Larger of the two between `ScratchInter` and `ScratchInterIntra`.
+ const SCRATCH_SIZE: usize = mem::size_of::<ScratchInter>();
+-#[derive(FromZeroes)]
++#[derive(FromZeros)]
+ #[repr(C)]
+ pub struct TaskContextScratch([u8; SCRATCH_SIZE]);
+
+ impl TaskContextScratch {
+     pub fn inter_mut(&mut self) -> &mut ScratchInter {
+-        FromBytes::mut_from_prefix(&mut self.0).unwrap()
++        FromBytes::mut_from_prefix(&mut self.0).unwrap().0
+     }
+
+     pub fn inter_intra(&self) -> &ScratchInterIntra {
+-        FromBytes::ref_from_prefix(&self.0).unwrap()
++        FromBytes::ref_from_prefix(&self.0).unwrap().0
+     }
+
+     pub fn inter_intra_mut(&mut self) -> &mut ScratchInterIntra {
+-        FromBytes::mut_from_prefix(&mut self.0).unwrap()
++        FromBytes::mut_from_prefix(&mut self.0).unwrap().0
+     }
+ }
+
+@@ -1139,10 +1139,10 @@
+             l: Default::default(),
+             a: Default::default(),
+             rt: Default::default(),
+-            cf: FromZeroes::new_zeroed(),
+-            al_pal: FromZeroes::new_zeroed(),
++            cf: FromZeros::new_zeroed(),
++            al_pal: FromZeros::new_zeroed(),
+             pal_sz_uv: Default::default(),
+-            scratch: FromZeroes::new_zeroed(),
++            scratch: FromZeros::new_zeroed(),
+             warpmv: Default::default(),
+             lf_mask: Default::default(),
+             top_pre_cdef_toggle: Default::default(),
+--- a/src/ipred.rs
++++ b/src/ipred.rs
+@@ -5,7 +5,7 @@
+
+ use libc::ptrdiff_t;
+ use strum::FromRepr;
+-use zerocopy::{AsBytes, FromBytes};
++use zerocopy::{FromBytes, IntoBytes};
+
+ use crate::cpu::CpuFlags;
+ use crate::enum_map::{enum_map, enum_map_ty, DefaultValue};
+@@ -223,14 +223,14 @@
+         for y in 0..height {
+             let dst = dst + y * dst.pixel_stride::<BD>();
+             let dst = &mut *dst.slice_mut::<BD>(width);
+-            let dst = FromBytes::mut_slice_from(AsBytes::as_bytes_mut(dst)).unwrap();
++            let dst = <[[BD::Pixel; 8]]>::mut_from_bytes(dst.as_mut_bytes()).unwrap();
+             dst.fill([dc; 8]);
+         }
+     } else {
+         for y in 0..height {
+             let dst = dst + y * dst.pixel_stride::<BD>();
+             let dst = &mut *dst.slice_mut::<BD>(width);
+-            let dst = FromBytes::mut_slice_from(AsBytes::as_bytes_mut(dst)).unwrap();
++            let dst = <[[BD::Pixel; 4]]>::mut_from_bytes(dst.as_mut_bytes()).unwrap();
+             dst.fill([dc; 4]);
+         }
+     };
+--- a/src/levels.rs
++++ b/src/levels.rs
+@@ -6,7 +6,7 @@
+
+ use bitflags::bitflags;
+ use strum::{EnumCount, FromRepr};
+-use zerocopy::{AsBytes, FromBytes, FromZeroes};
++use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
+
+ use crate::align::ArrayDefault;
+ use crate::enum_map::{DefaultValue, EnumKey};
+@@ -207,7 +207,7 @@
+ }
+
+ #[repr(u8)]
+-#[derive(Clone, Copy, PartialEq, Eq, FromRepr, EnumCount, FromZeroes)]
++#[derive(Clone, Copy, PartialEq, Eq, FromRepr, EnumCount, FromZeros)]
+ pub enum BlockSize {
+     Bs128x128 = 0,
+     Bs128x64 = 1,
+@@ -347,7 +347,7 @@
+ ///
+ /// This is `align(4)` because the C version is a `union` with a `uint32_t`.
+ /// Being `align(4)` significantly speeds up things like `add_spatial_candidate`.
+-#[derive(Clone, Copy, Eq, Default, FromZeroes, FromBytes, AsBytes)]
++#[derive(Clone, Copy, Eq, Default, FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C, align(4))]
+ pub struct Mv {
+     pub y: i16,
+@@ -448,7 +448,7 @@
+
+ /// Really an [`InterIntraPredMode`],
+ /// but stored as a `u8` so there are no invalid bits.
+-#[derive(Clone, Copy, PartialEq, Eq, FromZeroes, FromBytes, AsBytes)]
++#[derive(Clone, Copy, PartialEq, Eq, FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(transparent)]
+ pub struct MaskedInterIntraPredMode(u8);
+
+@@ -484,7 +484,7 @@
+     }
+ }
+
+-#[derive(Clone, Default, FromZeroes, FromBytes, AsBytes)]
++#[derive(Clone, Default, FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C)]
+ pub struct Av1BlockInter1d {
+     pub mv: [Mv; 2],
+@@ -495,7 +495,7 @@
+
+     pub interintra_mode: MaskedInterIntraPredMode,
+
+-    /// For `impl `[`AsBytes`].
++    /// For [`IntoBytes`], so there's no implicit padding.
+     pub _padding: u8,
+ }
+
+@@ -505,7 +505,7 @@
+     }
+ }
+
+-#[derive(Clone, FromZeroes, FromBytes, AsBytes)]
++#[derive(Clone, FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C)]
+ pub struct Av1BlockInter2d {
+     pub mv2d: Mv,
+@@ -533,7 +533,7 @@
+             assert!(mem::size_of::<Av1BlockInter1d>() == mem::size_of::<Av1BlockInter2d>());
+         const _: () =
+             assert!(mem::align_of::<Av1BlockInter1d>() == mem::align_of::<Av1BlockInter2d>());
+-        FromBytes::ref_from(AsBytes::as_bytes(&self.one_d)).unwrap()
++        Av1BlockInter2d::ref_from_bytes(self.one_d.as_bytes()).unwrap()
+     }
+ }
+
+@@ -545,7 +545,7 @@
+
+ impl From<Av1BlockInter2d> for Av1BlockInterNd {
+     fn from(two_d: Av1BlockInter2d) -> Self {
+-        let one_d = <Av1BlockInter1d as FromBytes>::ref_from(AsBytes::as_bytes(&two_d))
++        let one_d = Av1BlockInter1d::ref_from_bytes(two_d.as_bytes())
+             .unwrap()
+             .clone(); // Cheap 12-byte clone.
+         Self { one_d }
+--- a/src/lf_mask.rs
++++ b/src/lf_mask.rs
+@@ -448,7 +448,7 @@
+     let by4 = by & 31;
+
+     let filter_level_yuv = filter_level.0.map(|a| a[0][0]);
+-    let [filter_level_y, filter_level_uv] = *<[u16; 2]>::ref_from(&filter_level_yuv).unwrap();
++    let [filter_level_y, filter_level_uv] = *<[u16; 2]>::ref_from_bytes(&filter_level_yuv).unwrap();
+
+     if bw4 != 0 && bh4 != 0 {
+         let mut level_cache_off = by * b4_stride + bx;
+@@ -457,7 +457,7 @@
+                 let idx = 4 * (level_cache_off + x);
+                 // `0.., ..2` is for Y
+                 let lvl = &mut *level_cache.index_mut((idx + 0.., ..2));
+-                *u16::mut_from(lvl).unwrap() = filter_level_y;
++                *u16::mut_from_bytes(lvl).unwrap() = filter_level_y;
+             }
+             level_cache_off += b4_stride;
+         }
+@@ -494,7 +494,7 @@
+             let idx = 4 * (level_cache_off + x);
+             // `2.., ..2` is for UV
+             let lvl = &mut *level_cache.index_mut((idx + 2.., ..2));
+-            *u16::mut_from(lvl).unwrap() = filter_level_uv;
++            *u16::mut_from_bytes(lvl).unwrap() = filter_level_uv;
+         }
+         level_cache_off += b4_stride;
+     }
+@@ -547,7 +547,7 @@
+     let by4 = by & 31;
+
+     let filter_level_yuv = filter_level.0.map(|a| a[r#ref][is_gmv]);
+-    let [filter_level_y, filter_level_uv] = *<[u16; 2]>::ref_from(&filter_level_yuv).unwrap();
++    let [filter_level_y, filter_level_uv] = *<[u16; 2]>::ref_from_bytes(&filter_level_yuv).unwrap();
+
+     if bw4 != 0 && bh4 != 0 {
+         let mut level_cache_off = by * b4_stride + bx;
+@@ -556,7 +556,7 @@
+                 let idx = 4 * (level_cache_off + x);
+                 // `0.., ..2` is for Y
+                 let lvl = &mut *level_cache.index_mut((idx + 0.., ..2));
+-                *u16::mut_from(lvl).unwrap() = filter_level_y;
++                *u16::mut_from_bytes(lvl).unwrap() = filter_level_y;
+             }
+             level_cache_off += b4_stride;
+         }
+@@ -604,7 +604,7 @@
+             let idx = 4 * (level_cache_off + x);
+             // `2.., ..2` is for UV
+             let lvl = &mut *level_cache.index_mut((idx + 2.., ..2));
+-            *u16::mut_from(lvl).unwrap() = filter_level_uv;
++            *u16::mut_from_bytes(lvl).unwrap() = filter_level_uv;
+         }
+         level_cache_off += b4_stride;
+     }
+--- a/src/looprestoration.rs
++++ b/src/looprestoration.rs
+@@ -7,7 +7,7 @@
+ use bitflags::bitflags;
+ use libc::ptrdiff_t;
+ use to_method::To;
+-use zerocopy::{AsBytes, FromBytes, FromZeroes};
++use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+
+ use crate::align::AlignedVec64;
+ use crate::cpu::CpuFlags;
+@@ -53,7 +53,7 @@
+     }
+ }
+
+-#[derive(FromZeroes, FromBytes, AsBytes)]
++#[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
+ #[repr(C)]
+ pub struct LooprestorationParamsSgr {
+     pub s0: u32,
+@@ -71,7 +71,7 @@
+ #[repr(C)]
+ #[repr(align(16))]
+ pub struct LooprestorationParams {
+-    /// [`Align16`] moved to [`Self`] because we can't `#[derive(`[`AsBytes`]`)]` on it due to generics.
++    /// [`Align16`] moved to [`Self`] because we can't derive [`IntoBytes`] on it due to generics.
+     ///
+     /// [`Align16`]: crate::align::Align16
+     pub filter: [[i16; 8]; 2],
+@@ -86,7 +86,7 @@
+         let _: () = assert!(
+             mem::align_of::<LooprestorationParams>() >= mem::align_of::<LooprestorationParamsSgr>()
+         );
+-        FromBytes::ref_from_prefix(AsBytes::as_bytes(&self.filter)).unwrap()
++        FromBytes::ref_from_prefix(self.filter.as_bytes()).unwrap().0
+     }
+
+     pub fn sgr_mut(&mut self) -> &mut LooprestorationParamsSgr {
+@@ -97,7 +97,7 @@
+         const _: () = assert!(
+             mem::align_of::<LooprestorationParams>() >= mem::align_of::<LooprestorationParamsSgr>()
+         );
+-        FromBytes::mut_from_prefix(AsBytes::as_bytes_mut(&mut self.filter)).unwrap()
++        FromBytes::mut_from_prefix(self.filter.as_mut_bytes()).unwrap().0
+     }
+ }
+
+--- a/src/refmvs.rs
++++ b/src/refmvs.rs
+@@ -4,7 +4,7 @@
+ use std::mem::MaybeUninit;
+ use std::{cmp, mem, ptr, slice};
+
+-use zerocopy::{AsBytes, FromZeroes};
++use zerocopy::{FromZeros, Immutable, IntoBytes};
+
+ use crate::align::{Align16, AlignedVec64};
+ use crate::cpu::CpuFlags;
+@@ -29,7 +29,7 @@
+ }
+ const _: () = assert!(mem::size_of::<RefMvsTemporalBlock>() == 5);
+
+-#[derive(Clone, Copy, Eq, FromZeroes, AsBytes)]
++#[derive(Clone, Copy, Eq, FromZeros, Immutable, IntoBytes)]
+ // In C, this is packed and is 2 bytes.
+ // In Rust, being packed and aligned is tricky
+ #[repr(C, align(2))]
+@@ -55,7 +55,7 @@
+     }
+ }
+
+-#[derive(Clone, Copy, Default, Eq, FromZeroes, AsBytes)]
++#[derive(Clone, Copy, Default, Eq, FromZeros, Immutable, IntoBytes)]
+ #[repr(C)]
+ #[repr(align(4))] // Is a `union` with a `uint64_t` in C, so `align(8)`, but `align(8)` doesn't allow `align(4)` for `RefMvsBlock`.
+ pub struct RefMvsMvPair {
+@@ -74,7 +74,7 @@
+     }
+ }
+
+-#[derive(Clone, Copy, FromZeroes)]
++#[derive(Clone, Copy, FromZeros)]
+ // In C, this is packed and is 12 bytes.
+ // In Rust, being packed and aligned is tricky
+ #[repr(C, align(4))]
+@@ -1626,7 +1626,7 @@
+         let r_sz = 35 * 2 * n_blocks as usize * (1 + (n_frame_threads > 1) as usize) + R_PAD;
+         let rp_proj_sz = 16 * n_blocks as usize;
+         // TODO fallible allocation
+-        rf.r.resize(r_sz, FromZeroes::new_zeroed());
++        rf.r.resize(r_sz, FromZeros::new_zeroed());
+         rf.rp_proj.resize(rp_proj_sz, Default::default());
+         rf.n_blocks = n_blocks;
+     }

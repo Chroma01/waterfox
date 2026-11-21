@@ -1,0 +1,96 @@
+--- a/build.rs
++++ b/build.rs
+@@ -65,7 +65,7 @@
+         let os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+         let vendor = env::var("CARGO_CFG_TARGET_VENDOR").unwrap();
+         let pointer_width = env::var("CARGO_CFG_TARGET_POINTER_WIDTH").unwrap();
+-        let features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap();
++        let features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+
+         // Nothing to do on unknown architectures
+         let Ok(arch) = arch.parse::<Arch>() else {
+@@ -288,14 +288,13 @@
+         if use_nasm {
+             let mut nasm = nasm_rs::Build::new();
+             nasm.min_version(2, 14, 0);
++            println!("cargo:rerun-if-env-changed=NASM");
++            if let Some(path) = env::var_os("NASM").filter(|path| !path.is_empty()) {
++                nasm.nasm(path);
++            }
+             nasm.files(asm_file_paths);
+             #[cfg(debug_assertions)]
+             nasm.flag("-g");
+-            #[cfg(debug_assertions)]
+-            nasm.flag(match os {
+-                "windows" => "-fwin64",
+-                _ => "-Fdwarf",
+-            });
+             nasm.flag(&format!("-I{}/", out_dir.to_str().unwrap()));
+             nasm.flag("-Isrc/");
+             let obj = nasm.compile_objects().unwrap_or_else(|e| {
+--- a/src/cpu.rs
++++ b/src/cpu.rs
+@@ -64,7 +64,7 @@
+         let individual_flags = [
+             #[cfg(target_feature = "sse2")]
+             CpuFlags::SSE2,
+-            #[cfg(target_feature = "sse3")]
++            #[cfg(target_feature = "ssse3")]
+             CpuFlags::SSSE3,
+             #[cfg(target_feature = "sse4.1")]
+             CpuFlags::SSE41,
+@@ -115,6 +115,7 @@
+
+     #[cfg(feature = "asm")]
+     pub fn run_time_detect() -> Self {
++        #[allow(unused_mut)] // Some targets have no runtime CPU detection.
+         let mut flags = Self::empty();
+
+         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+@@ -171,16 +172,15 @@
+             }
+         }
+
+-        #[cfg(target_arch = "arm")]
++        #[cfg(all(target_arch = "arm", any(target_os = "linux", target_os = "android")))]
+         {
+-            if std::arch::is_arm_feature_detected!("neon") {
++            // ARM32's <asm/hwcap.h> defines this bit; libc doesn't expose it.
++            const HWCAP_NEON: libc::c_ulong = 1 << 12;
++
++            // SAFETY: getauxval takes an auxiliary vector key and no pointers.
++            let hwcap = unsafe { libc::getauxval(libc::AT_HWCAP) };
++            if hwcap & HWCAP_NEON != 0 {
+                 flags |= Self::NEON;
+-            }
+-            if std::arch::is_arm_feature_detected!("dotprod") {
+-                flags |= Self::DOTPROD;
+-            }
+-            if std::arch::is_arm_feature_detected!("i8mm") {
+-                flags |= Self::I8MM;
+             }
+         }
+
+@@ -201,11 +201,6 @@
+             if std::arch::is_aarch64_feature_detected!("sve2") {
+                 flags |= Self::SVE2;
+             }
+-        }
+-
+-        #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+-        if std::arch::is_riscv_feature_detected!("v") {
+-            flags |= Self::V;
+         }
+
+         flags
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,8 +1,3 @@
+-#![cfg_attr(target_arch = "arm", feature(stdarch_arm_feature_detection))]
+-#![cfg_attr(
+-    any(target_arch = "riscv32", target_arch = "riscv64"),
+-    feature(stdarch_riscv_feature_detection)
+-)]
+ #![allow(clippy::derivable_impls, clippy::erasing_op, clippy::ptr_eq)]
+ #![expect(
+     clippy::arc_with_non_send_sync,

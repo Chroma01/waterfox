@@ -1,0 +1,206 @@
+--- a/src/filmgrain.rs
++++ b/src/filmgrain.rs
+@@ -8,6 +8,7 @@
+ use libc::{intptr_t, ptrdiff_t};
+ use to_method::To;
+ 
++use crate::align::Align16;
+ use crate::cpu::CpuFlags;
+ use crate::enum_map::{enum_map, enum_map_ty, DefaultValue};
+ use crate::ffi_safe::FFISafe;
+@@ -38,6 +39,14 @@
+ const SUB_GRAIN_WIDTH: usize = 44;
+ const SUB_GRAIN_HEIGHT: usize = 38;
+ 
++// x86 psrad reads 16 aligned bytes at ar_coeff_shift. Align the DSP copies,
++// not the public type, since its alignment affects the C frame header layout.
++const _: () = {
++    const SHIFT_OFFSET: usize = mem::offset_of!(Dav1dFilmGrainData, ar_coeff_shift);
++    assert!(SHIFT_OFFSET == 176);
++    assert!(mem::size_of::<Dav1dFilmGrainData>() >= SHIFT_OFFSET + 16);
++};
++
+ wrap_fn_ptr!(pub unsafe extern "C" fn generate_grain_y(
+     buf: *mut GrainLut<DynEntry>,
+     data: &Dav1dFilmGrainData,
+@@ -52,10 +61,10 @@
+         bd: BD,
+     ) {
+         let buf = ptr::from_mut(buf).cast();
+-        let data = &data.clone().into();
++        let data = Align16(data.clone().into());
+         let bd = bd.into_c();
+         // SAFETY: Fallback `fn generate_grain_y_rust` is safe; asm is supposed to do the same.
+-        unsafe { self.get()(buf, data, bd) }
++        unsafe { self.get()(buf, &data.0, bd) }
+     }
+ }
+ 
+@@ -78,11 +87,11 @@
+     ) {
+         let buf = ptr::from_mut(buf).cast();
+         let buf_y = ptr::from_ref(buf_y).cast();
+-        let data = &data.clone().into();
++        let data = Align16(data.clone().into());
+         let uv = is_uv.into();
+         let bd = bd.into_c();
+         // SAFETY: Fallback `fn generate_grain_uv_rust` is safe; asm is supposed to do the same.
+-        unsafe { self.get()(buf, buf_y, data, uv, bd) }
++        unsafe { self.get()(buf, buf_y, &data.0, uv, bd) }
+     }
+ }
+ 
+@@ -120,7 +129,7 @@
+         let dst_row_ptr = dst_row.as_mut_ptr::<BD>().cast();
+         let src_row_ptr = src_row.as_ptr::<BD>().cast();
+         let stride = dst.stride();
+-        let data = &data.clone().into();
++        let data = Align16(data.clone().into());
+         let scaling = ptr::from_ref(scaling).cast();
+         let grain_lut = ptr::from_ref(grain_lut).cast();
+         let bh = bh as c_int;
+@@ -134,7 +143,7 @@
+                 dst_row_ptr,
+                 src_row_ptr,
+                 stride,
+-                data,
++                &data.0,
+                 pw,
+                 scaling,
+                 grain_lut,
+@@ -192,7 +201,7 @@
+         let dst_row_ptr = dst_row.as_mut_ptr::<BD>().cast();
+         let src_row_ptr = src_row.as_ptr::<BD>().cast();
+         let stride = dst.stride();
+-        let data = &data.clone().into();
++        let data = Align16(data.clone().into());
+         let scaling = (scaling as *const BD::Scaling).cast();
+         let grain_lut = (grain_lut as *const GrainLut<BD::Entry>).cast();
+         let bh = bh as c_int;
+@@ -212,7 +221,7 @@
+                 dst_row_ptr,
+                 src_row_ptr,
+                 stride,
+-                data,
++                &data.0,
+                 pw,
+                 scaling,
+                 grain_lut,
+--- a/src/include/dav1d/common.rs
++++ b/src/include/dav1d/common.rs
+@@ -35,7 +35,7 @@
+ pub struct Dav1dDataProps {
+     pub timestamp: i64,
+     pub duration: i64,
+-    pub offset: libc::off_t,
++    pub offset: i64,
+     pub size: usize,
+     pub user_data: Dav1dUserData,
+ }
+@@ -74,7 +74,7 @@
+         Self {
+             timestamp,
+             duration,
+-            offset: offset.into(),
++            offset,
+             size,
+             user_data: user_data.into(),
+         }
+@@ -93,7 +93,7 @@
+         Self {
+             timestamp,
+             duration,
+-            offset: offset.try_into().unwrap(),
++            offset,
+             size,
+             user_data: user_data.into(),
+         }
+--- a/src/include/dav1d/dav1d.rs
++++ b/src/include/dav1d/dav1d.rs
+@@ -37,9 +37,9 @@
+ bitflags! {
+     #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+     pub struct Rav1dInloopFilterType: u8 {
+-        const DEBLOCK = 1 << 1;
+-        const CDEF = 1 << 2;
+-        const RESTORATION = 1 << 3;
++        const DEBLOCK = 1 << 0;
++        const CDEF = 1 << 1;
++        const RESTORATION = 1 << 2;
+     }
+ }
+
+--- a/src/include/dav1d/headers.rs
++++ b/src/include/dav1d/headers.rs
+@@ -126,7 +126,7 @@
+     }
+ }
+ 
+-pub type Dav1dFilterMode = u8;
++pub type Dav1dFilterMode = c_uint;
+ pub const DAV1D_N_SWITCHABLE_FILTERS: usize = Rav1dFilterMode::N_SWITCHABLE_FILTERS as usize;
+ pub const DAV1D_N_FILTERS: usize = Rav1dFilterMode::N_FILTERS as usize;
+ pub const DAV1D_FILTER_SWITCHABLE: Dav1dFilterMode = Rav1dFilterMode::Switchable as Dav1dFilterMode;
+@@ -208,7 +208,7 @@
+     }
+ }
+ 
+-pub type Dav1dRestorationType = u8;
++pub type Dav1dRestorationType = c_uint;
+ pub const DAV1D_RESTORATION_NONE: Dav1dRestorationType = Rav1dRestorationType::None.to_repr();
+ pub const DAV1D_RESTORATION_SWITCHABLE: Dav1dRestorationType =
+     Rav1dRestorationType::Switchable.to_repr();
+@@ -1754,11 +1754,8 @@
+     pub clip_to_restricted_range: bool,
+ }
+ 
+-/// Must be 16-byte aligned for `psrad` on [`Self::ar_coeff_shift`].
+-/// See the docs for [`Self::ar_coeff_shift`] for an explanation.
+ #[derive(Clone)]
+ #[repr(C)]
+-#[repr(align(16))]
+ pub struct Dav1dFilmGrainData {
+     pub seed: c_uint,
+     pub num_y_points: c_int,
+@@ -1770,41 +1767,6 @@
+     pub ar_coeff_lag: c_int,
+     pub ar_coeffs_y: [i8; 24],
+     pub ar_coeffs_uv: [[i8; 28]; 2],
+-    /// Must be 16-byte aligned for `psrad`.
+-    ///
+-    /// TODO(kkysen) This appears to be a bug in `dav1d`.
+-    ///
+-    /// x86 asm uses `psrad` on a pointer to [`Self::ar_coeff_shift`].
+-    /// When `psrad`'s shift operand is a memory address, i.e. a `XMMWORD PTR`,
+-    /// it loads 128 bits from it, shifts by the lower 64 bits,
+-    /// and requires the 128 bits to be 128-bit/16-byte aligned.
+-    ///
+-    /// Previously, and still in `dav1d`, [`Self::ar_coeff_shift`]
+-    /// is only 8-byte aligned, as is [`Self`]/[`Dav1dFilmGrainData`].
+-    /// However, in `dav1d`, [`Dav1dFilmGrainData`] is part of
+-    /// [`Dav1dFrameHeader`], which is allocated with [`malloc`].
+-    /// [`malloc`] happens to return 16-byte aligned pointers usually,
+-    /// but is not required to, so this is UB and will segfault if not aligned.
+-    ///
+-    /// Due to the [`Rav1dFilmGrainData`] to [`Dav1dFilmGrainData`]
+-    /// conversion done now, the [`Dav1dFilmGrainData`] is stored on the stack,
+-    /// and often will not be 16-byte aligned, and thus will often segfault.
+-    ///
+-    /// To fix this, [`Self::ar_coeff_shift`] must be 16-byte aligned.
+-    /// This cannot be done only for the field without changing the offsets of
+-    /// the subsequent fields, however, so we instead align
+-    /// [`Dav1dFilmGrainData`] itself with `#[repr(align(16))]`.
+-    /// [`Self::ar_coeff_shift`] is at offset `0xB0`/`176`,
+-    /// which is divisible by 16.
+-    ///
+-    /// `psrad` also loads a full 128 bits, not just the 64 bits of
+-    /// [`Self::ar_coeff_shift`], even if it doesn't read them,
+-    /// so we must ensure that the following 64 bits are also deferenceable.
+-    /// They indeed are in `dav1d`, but we must be careful,
+-    /// as [`Self::ar_coeff_shift`] being the last field would
+-    /// read 8 bytes out of bounds and be UB.
+-    ///
+-    /// [`malloc`]: libc::malloc
+     pub ar_coeff_shift: u64,
+     pub grain_scale_shift: c_int,
+     pub uv_mult: [c_int; 2],
